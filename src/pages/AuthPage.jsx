@@ -1,171 +1,151 @@
+// ─── src/pages/AuthPage.jsx ───────────────────────────────────────────────────
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { COLORS as C } from '@/utils/theme';
-
-const s = {
-  wrap: { minHeight: '100vh', display: 'flex', flexDirection: 'column', background: C.white },
-  top: {
-    background: `linear-gradient(145deg, ${C.field}, #1a3517)`,
-    padding: '64px 30px 52px',
-  },
-  logo: {
-    fontFamily: "'Playfair Display', serif",
-    fontSize: 34, fontWeight: 900, color: C.husk,
-  },
-  logoEm: { color: C.fieldLight },
-  tagline: { color: 'rgba(255,255,255,.68)', fontSize: 14, marginTop: 6 },
-  card: {
-    background: C.white, flex: 1,
-    borderRadius: '28px 28px 0 0', padding: '30px 24px',
-    marginTop: -20,
-  },
-  tabs: {
-    display: 'flex', background: C.creamDark,
-    borderRadius: 20, padding: 4, marginBottom: 24,
-  },
-  tab: (on) => ({
-    flex: 1, background: on ? C.earth : 'none', border: 'none',
-    borderRadius: 16, padding: 10, fontSize: 14, fontWeight: 600,
-    fontFamily: "'DM Sans', sans-serif",
-    color: on ? C.husk : C.smoke, cursor: 'pointer', transition: '.2s',
-  }),
-  lbl: {
-    fontSize: 11, fontWeight: 600, color: C.smoke,
-    marginBottom: 5, letterSpacing: '.3px', textTransform: 'uppercase',
-  },
-  grp: { marginBottom: 14 },
-  inp: {
-    width: '100%', background: C.creamDark,
-    border: `2px solid transparent`, borderRadius: 12,
-    padding: '12px 14px', fontSize: 14, fontFamily: "'DM Sans', sans-serif",
-    color: C.earth, outline: 'none',
-  },
-  socialRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 9, margin: '14px 0' },
-  socialBtn: {
-    border: `2px solid ${C.creamDark}`, borderRadius: 13, padding: 12,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    gap: 7, fontSize: 13, fontWeight: 600,
-    fontFamily: "'DM Sans', sans-serif", color: C.earth,
-    background: 'none', cursor: 'pointer',
-  },
-  divider: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    margin: '4px 0 14px', color: C.smoke, fontSize: 12,
-  },
-  bigBtn: {
-    width: '100%', background: C.field, color: 'white',
-    border: 'none', borderRadius: 16, padding: 15,
-    fontSize: 16, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
-    cursor: 'pointer',
-  },
-  agree: {
-    fontSize: 11, color: C.smoke, textAlign: 'center',
-    marginTop: 11, lineHeight: 1.6,
-  },
-  roleRow: {
-    display: 'flex', gap: 8, marginBottom: 20,
-  },
-  roleBtn: (on) => ({
-    flex: 1, border: `2px solid ${on ? C.field : C.creamDark}`,
-    borderRadius: 13, padding: '10px 6px', textAlign: 'center',
-    background: on ? `rgba(58,107,53,.08)` : 'none', cursor: 'pointer',
-    fontFamily: "'DM Sans', sans-serif", transition: '.2s',
-  }),
-  roleIco: { fontSize: 22, display: 'block', marginBottom: 4 },
-  roleLbl: (on) => ({ fontSize: 12, fontWeight: 700, color: on ? C.field : C.smoke }),
-};
+import { signUpEmail, loginEmail, loginGoogle, sendPhoneOTP, verifyPhoneOTP } from '@/firebase/auth';
 
 export default function AuthPage() {
-  const { login, setRole } = useApp();
-  const navigate = useNavigate();
+  const { login } = useApp();
+  const navigate  = useNavigate();
 
-  const [tab, setTab]     = useState('login');
-  const [selectedRole, setSelectedRole] = useState('customer');
+  const [tab, setTab]       = useState('login');
+  const [method, setMethod] = useState('email');
+  const [role, setRole]     = useState('customer');
+  const [step, setStep]     = useState(1);
   const [loading, setLoading] = useState(false);
-  const [form, setForm]   = useState({ name: '', phone: '', email: '', pass: '' });
+  const [error, setError]   = useState('');
+  const [confirmResult, setConfirmResult] = useState(null);
+  const [form, setForm]     = useState({ name:'', email:'', password:'', phone:'', otp:'' });
 
-  const ROLES = [
-    { id: 'customer', ico: '🛒', label: 'Customer' },
-    { id: 'farmer',   ico: '🌾', label: 'Farmer'   },
-    { id: 'agent',    ico: '🛵', label: 'Agent'     },
-  ];
+  const f   = (key) => (e) => setForm(p => ({ ...p, [key]: e.target.value }));
+  const dest = (r)  => r === 'farmer' ? '/farmer' : r === 'agent' ? '/agent' : '/';
 
-  const handleSubmit = async () => {
-    setLoading(true);
-    await new Promise(r => setTimeout(r, 1400));
-    login({ name: form.name || 'Ravi Kumar', phone: form.phone || '9876543210', role: selectedRole });
-    setRole(selectedRole);
+  const handleEmail = async () => {
+    setError(''); setLoading(true);
+    const res = tab === 'signup'
+      ? await signUpEmail({ name:form.name, email:form.email, password:form.password, role, phone:form.phone })
+      : await loginEmail({ email:form.email, password:form.password });
     setLoading(false);
-    const dest = selectedRole === 'farmer' ? '/farmer' : selectedRole === 'agent' ? '/agent' : '/';
-    navigate(dest);
+    if (res.error) { setError(res.error); return; }
+    login(res.user); navigate(dest(res.user.role));
   };
 
+  const handleGoogle = async () => {
+    setError(''); setLoading(true);
+    const res = await loginGoogle(role);
+    setLoading(false);
+    if (res.error) { setError(res.error); return; }
+    login(res.user); navigate(dest(res.user.role));
+  };
+
+  const handleSendOTP = async () => {
+    setError(''); setLoading(true);
+    const phone = form.phone.startsWith('+') ? form.phone : `+91${form.phone}`;
+    const res = await sendPhoneOTP(phone, 'recaptcha-container');
+    setLoading(false);
+    if (res.error) { setError(res.error); return; }
+    setConfirmResult(res.confirmation); setStep(2);
+  };
+
+  const handleVerifyOTP = async () => {
+    setError(''); setLoading(true);
+    const res = await verifyPhoneOTP(confirmResult, form.otp, role);
+    setLoading(false);
+    if (res.error) { setError(res.error); return; }
+    login(res.user); navigate(dest(res.user.role));
+  };
+
+  const inp = { width:'100%', background:C.creamDark, border:'2px solid transparent', borderRadius:12, padding:'12px 14px', fontSize:14, fontFamily:"'DM Sans',sans-serif", color:C.earth, outline:'none', marginBottom:11 };
+  const lbl = { fontSize:11, fontWeight:600, color:C.smoke, marginBottom:5, letterSpacing:'.3px', textTransform:'uppercase', display:'block' };
+  const btn = { width:'100%', background: loading ? C.smoke : C.field, color:'white', border:'none', borderRadius:16, padding:15, fontSize:16, fontWeight:700, fontFamily:"'DM Sans',sans-serif", cursor: loading ? 'not-allowed' : 'pointer', marginTop:4 };
+  const errBox = error ? <div style={{ color:C.red, fontSize:13, marginBottom:10, padding:'8px 12px', background:'rgba(192,57,43,.08)', borderRadius:8 }}>⚠️ {error}</div> : null;
+
   return (
-    <div style={s.wrap}>
-      <div style={s.top}>
-        <div style={s.logo}>Farm<span style={s.logoEm}>Drop</span></div>
-        <p style={s.tagline}>Fresh rice from farmers · 30 min delivery</p>
+    <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', background:C.white }}>
+      <div style={{ background:`linear-gradient(145deg,${C.field},#1a3517)`, padding:'60px 30px 50px' }}>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:34, fontWeight:900, color:C.husk }}>Farm<span style={{ color:C.fieldLight }}>Drop</span></div>
+        <p style={{ color:'rgba(255,255,255,.68)', fontSize:14, marginTop:6 }}>Fresh rice from farmers · 30 min delivery</p>
       </div>
-      <div style={s.card}>
-        <div style={s.tabs}>
+
+      <div style={{ background:C.white, flex:1, borderRadius:'28px 28px 0 0', padding:'28px 24px', marginTop:-20 }}>
+        {/* Tabs */}
+        <div style={{ display:'flex', background:C.creamDark, borderRadius:20, padding:4, marginBottom:22 }}>
           {['login','signup'].map(t => (
-            <button key={t} style={s.tab(tab === t)} onClick={() => setTab(t)}>
+            <button key={t} onClick={() => { setTab(t); setError(''); setStep(1); }} style={{ flex:1, background:tab===t?C.earth:'none', border:'none', borderRadius:16, padding:10, fontSize:14, fontWeight:600, fontFamily:"'DM Sans',sans-serif", color:tab===t?C.husk:C.smoke, cursor:'pointer', transition:'.2s' }}>
               {t === 'login' ? 'Login' : 'Sign Up'}
             </button>
           ))}
         </div>
 
-        {/* Role selector */}
-        <div style={{ fontSize: 11, fontWeight: 600, color: C.smoke, marginBottom: 10, letterSpacing: '.3px', textTransform: 'uppercase' }}>
-          I am a…
-        </div>
-        <div style={s.roleRow}>
-          {ROLES.map(r => (
-            <button key={r.id} style={s.roleBtn(selectedRole === r.id)} onClick={() => setSelectedRole(r.id)}>
-              <span style={s.roleIco}>{r.ico}</span>
-              <span style={s.roleLbl(selectedRole === r.id)}>{r.label}</span>
+        {/* Role */}
+        <div style={{ fontSize:11, fontWeight:600, color:C.smoke, marginBottom:10, letterSpacing:'.3px', textTransform:'uppercase' }}>I am a…</div>
+        <div style={{ display:'flex', gap:8, marginBottom:20 }}>
+          {[['customer','🛒','Customer'],['farmer','🌾','Farmer'],['agent','🛵','Agent']].map(([id,ico,lb]) => (
+            <button key={id} onClick={() => setRole(id)} style={{ flex:1, border:`2px solid ${role===id?C.field:C.creamDark}`, borderRadius:13, padding:'10px 6px', textAlign:'center', background:role===id?'rgba(58,107,53,.08)':'none', cursor:'pointer', fontFamily:"'DM Sans',sans-serif", transition:'.2s' }}>
+              <span style={{ fontSize:22, display:'block', marginBottom:4 }}>{ico}</span>
+              <span style={{ fontSize:12, fontWeight:700, color:role===id?C.field:C.smoke }}>{lb}</span>
             </button>
           ))}
         </div>
 
-        {tab === 'signup' && (
-          <div style={s.grp}>
-            <div style={s.lbl}>Full Name</div>
-            <input style={s.inp} placeholder="Ravi Kumar"
-              value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/>
+        {/* Method */}
+        <div style={{ fontSize:11, fontWeight:600, color:C.smoke, marginBottom:10, letterSpacing:'.3px', textTransform:'uppercase' }}>Sign in with…</div>
+        <div style={{ display:'flex', gap:8, marginBottom:20 }}>
+          {[['email','✉️','Email'],['phone','📱','OTP'],['google','🔵','Google']].map(([id,ico,lb]) => (
+            <button key={id} onClick={() => { setMethod(id); setError(''); setStep(1); }} style={{ flex:1, border:`2px solid ${method===id?C.field:C.creamDark}`, borderRadius:13, padding:'10px 6px', textAlign:'center', background:method===id?'rgba(58,107,53,.08)':'none', cursor:'pointer', fontFamily:"'DM Sans',sans-serif", transition:'.2s' }}>
+              <span style={{ fontSize:20, display:'block', marginBottom:4 }}>{ico}</span>
+              <span style={{ fontSize:12, fontWeight:700, color:method===id?C.field:C.smoke }}>{lb}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Email form */}
+        {method === 'email' && (<>
+          {tab === 'signup' && <div><label style={lbl}>Full Name</label><input style={inp} placeholder="Ravi Kumar" value={form.name} onChange={f('name')}/></div>}
+          <div><label style={lbl}>Email Address</label><input style={inp} placeholder="you@example.com" value={form.email} onChange={f('email')}/></div>
+          <div><label style={lbl}>Password</label><input style={inp} type="password" placeholder="Min 6 characters" value={form.password} onChange={f('password')}/></div>
+          {tab === 'signup' && <div><label style={lbl}>Phone (optional)</label><input style={inp} placeholder="+91 98765 43210" value={form.phone} onChange={f('phone')}/></div>}
+          {errBox}
+          <button style={btn} onClick={handleEmail} disabled={loading}>{loading ? '⏳ Please wait…' : tab==='login' ? '🌾 Login' : '🚀 Create Account'}</button>
+        </>)}
+
+        {/* Google */}
+        {method === 'google' && (<>
+          <div style={{ background:C.creamDark, borderRadius:14, padding:20, textAlign:'center', marginBottom:16 }}>
+            <div style={{ fontSize:44, marginBottom:10 }}>🔵</div>
+            <div style={{ fontSize:14, fontWeight:600, color:C.earth, marginBottom:4 }}>Continue with Google</div>
+            <div style={{ fontSize:12, color:C.smoke }}>You'll be redirected to Google to sign in securely</div>
           </div>
-        )}
-        <div style={s.grp}>
-          <div style={s.lbl}>Phone Number</div>
-          <input style={s.inp} placeholder="+91 98765 43210"
-            value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })}/>
-        </div>
-        <div style={s.grp}>
-          <div style={s.lbl}>Email</div>
-          <input style={s.inp} placeholder="you@example.com"
-            value={form.email} onChange={e => setForm({ ...form, email: e.target.value })}/>
-        </div>
-        <div style={s.grp}>
-          <div style={s.lbl}>Password</div>
-          <input style={s.inp} type="password" placeholder="••••••••"
-            value={form.pass} onChange={e => setForm({ ...form, pass: e.target.value })}/>
-        </div>
+          {errBox}
+          <button style={btn} onClick={handleGoogle} disabled={loading}>{loading ? '⏳ Signing in…' : '🔵 Sign in with Google'}</button>
+        </>)}
 
-        <div style={s.divider}>
-          <span style={{ flex: 1, height: 1, background: C.creamDark }}/>
-          or continue with
-          <span style={{ flex: 1, height: 1, background: C.creamDark }}/>
-        </div>
-        <div style={s.socialRow}>
-          <button style={s.socialBtn} onClick={handleSubmit}>🔵 Google</button>
-          <button style={s.socialBtn} onClick={handleSubmit}>📱 OTP</button>
-        </div>
+        {/* Phone OTP */}
+        {method === 'phone' && (<>
+          {step === 1 && (<>
+            <div><label style={lbl}>Phone Number</label><input style={inp} placeholder="+91 98765 43210" value={form.phone} onChange={f('phone')}/></div>
+            <div style={{ background:C.creamDark, borderRadius:12, padding:'10px 14px', fontSize:12, color:C.smoke, marginBottom:14 }}>📲 We'll send a 6-digit OTP to verify your number</div>
+            {errBox}
+            <button style={btn} onClick={handleSendOTP} disabled={loading}>{loading ? '⏳ Sending OTP…' : '📱 Send OTP'}</button>
+          </>)}
+          {step === 2 && (<>
+            <div style={{ textAlign:'center', marginBottom:16 }}>
+              <div style={{ fontSize:44 }}>📲</div>
+              <div style={{ fontSize:14, fontWeight:600, color:C.earth, marginTop:8 }}>OTP sent to {form.phone}</div>
+              <div style={{ fontSize:12, color:C.smoke, marginTop:4 }}>Enter the 6-digit code below</div>
+            </div>
+            <div><label style={lbl}>Enter OTP</label><input style={{ ...inp, fontSize:24, fontWeight:700, letterSpacing:10, textAlign:'center' }} placeholder="• • • • • •" maxLength={6} value={form.otp} onChange={f('otp')}/></div>
+            {errBox}
+            <button style={btn} onClick={handleVerifyOTP} disabled={loading}>{loading ? '⏳ Verifying…' : '✅ Verify & Login'}</button>
+            <button onClick={() => { setStep(1); setError(''); }} style={{ width:'100%', background:'none', color:C.smoke, border:'none', padding:10, fontSize:13, fontFamily:"'DM Sans',sans-serif", cursor:'pointer', marginTop:4 }}>← Change number</button>
+          </>)}
+        </>)}
 
-        <button style={s.bigBtn} onClick={handleSubmit} disabled={loading}>
-          {loading ? 'Please wait…' : tab === 'login' ? '🌾 Login to FarmDrop' : '🚀 Create Account'}
-        </button>
-        <p style={s.agree}>By continuing, you agree to our <span style={{ color: C.field, fontWeight: 600 }}>Terms</span> & <span style={{ color: C.field, fontWeight: 600 }}>Privacy Policy</span></p>
+        <div id="recaptcha-container"/>
+        <p style={{ fontSize:11, color:C.smoke, textAlign:'center', marginTop:14, lineHeight:1.6 }}>
+          By continuing you agree to our <span style={{ color:C.field, fontWeight:600 }}>Terms</span> & <span style={{ color:C.field, fontWeight:600 }}>Privacy Policy</span>
+        </p>
       </div>
     </div>
   );
