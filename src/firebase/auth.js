@@ -1,7 +1,4 @@
 // ─── src/firebase/auth.js ─────────────────────────────────────────────────────
-// Handles: Email/Password, Google Sign-In, Phone OTP
-// All functions return { user, error }
-
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -13,101 +10,119 @@ import {
   onAuthStateChanged,
   updateProfile,
 } from 'firebase/auth';
-
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './config';
 
-// ── Google provider ────────────────────────────────────────────────────────────
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// ── Helper: create/fetch user profile in Firestore ────────────────────────────
-export async function ensureUserProfile(firebaseUser, extraData = {}) {
-  const ref = doc(db, 'users', firebaseUser.uid);
-  const snap = await getDoc(ref);
+// FIX: recaptchaVerifier kept as module-level variable
+// so it is not recreated on every call (fixes "already rendered" crash)
+let recaptchaVerifier = null;
 
+export async function ensureUserProfile(firebaseUser, extraData = {}) {
+  const ref  = doc(db, 'users', firebaseUser.uid);
+  const snap = await getDoc(ref);
   if (!snap.exists()) {
-    // First time — create profile
     await setDoc(ref, {
       uid:       firebaseUser.uid,
       name:      firebaseUser.displayName || extraData.name || 'FarmDrop User',
-      email:     firebaseUser.email || '',
+      email:     firebaseUser.email       || '',
       phone:     firebaseUser.phoneNumber || extraData.phone || '',
-      role:      extraData.role || 'customer',   // customer | farmer | agent
-      zone:      extraData.zone || 'Zone 3',
-      address:   extraData.address || '',
+      role:      extraData.role           || 'customer',
+      zone:      extraData.zone           || 'Zone 3',
+      address:   extraData.address        || '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   }
-
-  const updated = await getDoc(ref);
-  return updated.data();
+  const fresh = await getDoc(ref);
+  return fresh.data();
 }
 
-// ── 1. Email / Password — Sign Up ─────────────────────────────────────────────
+// 1. Email Sign Up
 export async function signUpEmail({ name, email, password, role, phone }) {
   try {
-    const cred = await createUserWithEmailAndPassword(auth, email, password);
-    await updateProfile(cred.user, { displayName: name });
-    const profile = await ensureUserProfile(cred.user, { name, role, phone });
-    return { user: { ...cred.user, ...profile }, error: null };
+    // FIX: validate inputs before hitting Firebase
+    if (!name?.trim())     return { user: null, error: 'Please enter your name.' };
+    if (!email?.trim())    return { user: null, error: 'Please enter your email.' };
+    if (!password || password.length < 6) return { user: null, error: 'Password must be at least 6 characters.' };
+
+    const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+    await updateProfile(cred.user, { displayName: name.trim() });
+    const profile = await ensureUserProfile(cred.user, { name: name.trim(), role, phone });
+    return { user: { uid: cred.user.uid, email: cred.user.email, ...profile }, error: null };
   } catch (err) {
     return { user: null, error: friendlyError(err.code) };
   }
 }
 
-// ── 2. Email / Password — Login ───────────────────────────────────────────────
+// 2. Email Login
 export async function loginEmail({ email, password }) {
   try {
-    const cred = await signInWithEmailAndPassword(auth, email, password);
+    if (!email?.trim())  return { user: null, error: 'Please enter your email.' };
+    if (!password)       return { user: null, error: 'Please enter your password.' };
+
+    const cred    = await signInWithEmailAndPassword(auth, email.trim(), password);
     const profile = await ensureUserProfile(cred.user);
-    return { user: { ...cred.user, ...profile }, error: null };
+    return { user: { uid: cred.user.uid, email: cred.user.email, ...profile }, error: null };
   } catch (err) {
     return { user: null, error: friendlyError(err.code) };
   }
 }
 
-// ── 3. Google Sign-In ─────────────────────────────────────────────────────────
+// 3. Google
 export async function loginGoogle(role = 'customer') {
   try {
-    const cred = await signInWithPopup(auth, googleProvider);
+    const cred    = await signInWithPopup(auth, googleProvider);
     const profile = await ensureUserProfile(cred.user, { role });
-    return { user: { ...cred.user, ...profile }, error: null };
+    return { user: { uid: cred.user.uid, email: cred.user.email, ...profile }, error: null };
   } catch (err) {
     return { user: null, error: friendlyError(err.code) };
   }
 }
 
-// ── 4. Phone OTP — Step 1: Send OTP ──────────────────────────────────────────
+// 4. Phone OTP — send
 export async function sendPhoneOTP(phoneNumber, recaptchaContainerId) {
   try {
-    // phoneNumber format: +91XXXXXXXXXX
-    const recaptcha = new RecaptchaVerifier(auth, recaptchaContainerId, {
-      size: 'invisible',
-      callback: () => {},
-    });
-    const confirmation = await signInWithPhoneNumber(auth, phoneNumber, recaptcha);
+    if (!phoneNumber || phoneNumber.replace(/\D/g,'').length < 10)
+      return { confirmation: null, error: 'Please enter a valid phone number.' };
+
+    // FIX: clear old verifier before creating new one
+    if (recaptchaVerifier) {
+      recaptchaVerifier.clear();
+      recaptchaVerifier = null;
+    }
+    recaptchaVerifier = new RecaptchaVerifier(auth, recaptchaContainerId, { size: 'invisible' });
+
+    const confirmation = await signInWithPhoneNumber(auth, phoneNumber, recaptchaVerifier);
     return { confirmation, error: null };
   } catch (err) {
+    recaptchaVerifier = null;
     return { confirmation: null, error: friendlyError(err.code) };
   }
 }
 
-// ── 5. Phone OTP — Step 2: Verify OTP ────────────────────────────────────────
+// 5. Phone OTP — verify
 export async function verifyPhoneOTP(confirmationResult, otp, role = 'customer') {
   try {
-    const cred = await confirmationResult.confirm(otp);
+    if (!otp || otp.trim().length < 4)
+      return { user: null, error: 'Please enter the OTP.' };
+    if (!confirmationResult)
+      return { user: null, error: 'Session expired. Please request a new OTP.' };
+
+    const cred    = await confirmationResult.confirm(otp.trim());
     const profile = await ensureUserProfile(cred.user, { role });
-    return { user: { ...cred.user, ...profile }, error: null };
+    return { user: { uid: cred.user.uid, ...profile }, error: null };
   } catch (err) {
     return { user: null, error: friendlyError(err.code) };
   }
 }
 
-// ── 6. Logout ─────────────────────────────────────────────────────────────────
+// 6. Logout
 export async function logout() {
   try {
+    recaptchaVerifier = null;
     await signOut(auth);
     return { error: null };
   } catch (err) {
@@ -115,30 +130,36 @@ export async function logout() {
   }
 }
 
-// ── 7. Auth state listener (use in AppContext) ────────────────────────────────
+// 7. Auth state listener
 export function onAuthChange(callback) {
   return onAuthStateChanged(auth, async (firebaseUser) => {
     if (firebaseUser) {
-      const profile = await ensureUserProfile(firebaseUser);
-      callback({ ...firebaseUser, ...profile });
+      try {
+        const profile = await ensureUserProfile(firebaseUser);
+        callback({ uid: firebaseUser.uid, email: firebaseUser.email, ...profile });
+      } catch {
+        callback(null);
+      }
     } else {
       callback(null);
     }
   });
 }
 
-// ── Friendly error messages ───────────────────────────────────────────────────
 function friendlyError(code) {
   const map = {
-    'auth/email-already-in-use':    'This email is already registered. Try logging in.',
-    'auth/wrong-password':          'Incorrect password. Please try again.',
-    'auth/user-not-found':          'No account found with this email.',
-    'auth/invalid-email':           'Please enter a valid email address.',
-    'auth/weak-password':           'Password must be at least 6 characters.',
-    'auth/too-many-requests':       'Too many attempts. Please wait a moment.',
+    'auth/email-already-in-use':      'This email is already registered. Try logging in.',
+    'auth/wrong-password':            'Incorrect password. Please try again.',
+    'auth/invalid-credential':        'Incorrect email or password. Please try again.',
+    'auth/user-not-found':            'No account found with this email.',
+    'auth/invalid-email':             'Please enter a valid email address.',
+    'auth/weak-password':             'Password must be at least 6 characters.',
+    'auth/too-many-requests':         'Too many attempts. Please wait a few minutes.',
     'auth/invalid-verification-code': 'Invalid OTP. Please check and try again.',
-    'auth/code-expired':            'OTP expired. Please request a new one.',
-    'auth/popup-closed-by-user':    'Google sign-in was cancelled.',
+    'auth/code-expired':              'OTP has expired. Please request a new one.',
+    'auth/popup-closed-by-user':      'Google sign-in was cancelled.',
+    'auth/network-request-failed':    'Network error. Please check your connection.',
+    'auth/user-disabled':             'This account has been disabled. Contact support.',
   };
   return map[code] || 'Something went wrong. Please try again.';
 }
